@@ -1,8 +1,12 @@
+// The JavaScript is organised by job: page elements, dragging, zones, sound, then setup.
+
+///////////// Page Elements
 const canvas = document.getElementById("sound-canvas");
 const flower = document.getElementById("draggable-flower");
 const status = document.getElementById("sound-status");
 
-// Each zone has its own register, so random choices always preserve the mapping.
+///////////// Notes
+// Each zone has a different register, so Math.random() cannot select a note from the wrong area.
 const zoneNotes = {
     underground: { label: "Underground", notes: ["C3", "E3", "G3", "A3"] },
     garden: { label: "Garden", notes: ["C4", "E4", "G4", "A4"] },
@@ -15,6 +19,7 @@ const noteFrequencies = {
     C5: 523.25, E5: 659.25, G5: 783.99, A5: 880.0
 };
 
+///////////// Dragging
 let dragging = false;
 let pointerOffset = { x: 0, y: 0 };
 let lastValidPosition = { x: 0, y: 0 };
@@ -29,7 +34,7 @@ function placeFlower(x, y) {
     const maxX = canvasRect.width - flowerRect.width;
     const maxY = canvasRect.height - flowerRect.height;
 
-    // Clamp the top-left position so the flower cannot be dragged beyond the canvas edge.
+    // Math.min and Math.max keep the flower inside the canvas boundaries.
     const clampedX = Math.min(Math.max(0, x), maxX);
     const clampedY = Math.min(Math.max(0, y), maxY);
     flower.style.left = clampedX + "px";
@@ -45,45 +50,42 @@ function setInitialPosition() {
     lastValidPosition = { x, y };
 }
 
-function canvasPositionFromPointer(event) {
-    const canvasRect = canvas.getBoundingClientRect();
-    return {
-        x: event.clientX - canvasRect.left - pointerOffset.x,
-        y: event.clientY - canvasRect.top - pointerOffset.y
-    };
-}
-
-// Pointer Events provide one drag implementation for mouse, pen, and touch input.
-flower.addEventListener("pointerdown", (event) => {
+function startDragging(event) {
     event.preventDefault();
     const flowerRect = flower.getBoundingClientRect();
-    pointerOffset = {
-        x: event.clientX - flowerRect.left,
-        y: event.clientY - flowerRect.top
-    };
+    pointerOffset.x = event.clientX - flowerRect.left;
+    pointerOffset.y = event.clientY - flowerRect.top;
     dragging = true;
     flower.classList.add("is-dragging");
     flower.setPointerCapture(event.pointerId);
-});
+    flower.classList.add("is-dragging");
+    flower.setPointerCapture(event.pointerId);
+}
 
-flower.addEventListener("pointermove", (event) => {
-    if (!dragging) return;
-    const position = canvasPositionFromPointer(event);
-    placeFlower(position.x, position.y);
-});
+function moveFlower(event) {
+    if (dragging === false) return;
 
-flower.addEventListener("pointerup", (event) => {
-    if (!dragging) return;
+    const canvasRect = canvas.getBoundingClientRect();
+    const x = event.clientX - canvasRect.left - pointerOffset.x;
+    const y = event.clientY - canvasRect.top - pointerOffset.y;
+
+    placeFlower(x, y);
+}
+
+function stopDragging(event) {
+    if (dragging === false) return;
     dragging = false;
     flower.classList.remove("is-dragging");
 
     const canvasRect = canvas.getBoundingClientRect();
-    const droppedInsideCanvas =
-        event.clientX >= canvasRect.left && event.clientX <= canvasRect.right &&
-        event.clientY >= canvasRect.top && event.clientY <= canvasRect.bottom;
+    const releasedInsideCanvas =
+        event.clientX >= canvasRect.left &&
+        event.clientX <= canvasRect.right &&
+        event.clientY >= canvasRect.top &&
+        event.clientY <= canvasRect.bottom;
 
-    if (!droppedInsideCanvas) {
-        // A release outside the canvas discards the in-progress position.
+    if (releasedInsideCanvas === false) {
+        // If the pointer is released outside, return to the last successful drop.
         placeFlower(lastValidPosition.x, lastValidPosition.y);
         status.textContent = "Flower returned to its previous position.";
         return;
@@ -91,64 +93,96 @@ flower.addEventListener("pointerup", (event) => {
 
     const flowerRect = flower.getBoundingClientRect();
     const flowerCentreY = flowerRect.top + flowerRect.height / 2 - canvasRect.top;
-    const zoneKey = zoneAt(flowerCentreY, canvasRect.height);
-    lastValidPosition = {
-        x: parseFloat(flower.style.left),
-        y: parseFloat(flower.style.top)
-    };
+    const zoneKey = findZone(flowerCentreY, canvasRect.height);
+    lastValidPosition.x = parseFloat(flower.style.left);
+    lastValidPosition.y = parseFloat(flower.style.top);
     playZoneNote(zoneKey);
 });
 
-flower.addEventListener("pointercancel", () => {
-    if (!dragging) return;
+function cancelDragging() {
+    if (dragging === false) return;
     dragging = false;
     flower.classList.remove("is-dragging");
     placeFlower(lastValidPosition.x, lastValidPosition.y);
-});
+}
 
-function zoneAt(yPosition, canvasHeight) {
-    if (yPosition < canvasHeight / 3) return "sky";
-    if (yPosition < (canvasHeight / 3) * 2) return "garden";
+// Pointer Events work for mouse, touchscreens, and pens.
+flower.addEventListener("pointerdown", startDragging);
+flower.addEventListener("pointermove", moveFlower);
+flower.addEventListener("pointerup", stopDragging);
+flower.addEventListener("pointercancel", cancelDragging);
+
+///////////// Zone Selection
+function findZone(flowerY, canvasHeight) {
+    if (flowerY < canvasHeight / 3) return "sky";
+    if (flowerY < (canvasHeight / 3) * 2) return "garden";
     return "underground";
 }
 
 // Random selection happens only within the selected zone's four-note group.
-function randomNote(zoneKey) {
+function getRandomNote(zoneKey) {
     const notes = zoneNotes[zoneKey].notes;
-    return notes[Math.floor(Math.random() * notes.length)];
+    const randomNumber = Math.floor(Math.random() * notes.length);
+    return notes[randomNumber];
 }
 
-async function getAudioContext() {
-    audioContext ??= new AudioContext();
-    masterGain ??= audioContext.createGain();
-    masterGain.gain.value = 0.16; // A fixed output ceiling avoids loud repeated drops.
-    masterGain.connect(audioContext.destination);
+let clearHighlightTimer;
 
-    if (audioContext.state === "suspended") await audioContext.resume();
-    return audioContext;
+function highlightZone(zoneKey) {
+    const zones = document.querySelectorAll(".zone");
+    const selectedZone = document.querySelector('[data-zone="' + zoneKey + '"]');
+
+    clearTimeout(clearHighlightTimer);
+    zones.forEach((zone) => zone.classList.remove("is-selected"));
+    selectedZone.classList.add("is-selected");
+
+clearHighlightTimer = setTimeout(() => {
+        selectedZone.classList.remove("is-selected");
+    }, 450);
+}
+
+///////////// Sound
+let audioContext;
+let masterGain;
+let currentOscillator;
+
+async function prepareAudio() {
+    if (!audioContext) {
+        audioContext = new AudioContext();
+        masterGain = audioContext.createGain();
+        masterGain.gain.value = 0.16;
+        masterGain.connect(audioContext.destination);
+    }
+
+    if (audioContext.state === "suspended") {
+        await audioContext.resume();
+    }
 }
 
 async function playZoneNote(zoneKey) {
-    const note = randomNote(zoneKey);
+    const note = getRandomNote(zoneKey);
     const zone = zoneNotes[zoneKey];
     status.textContent = zone.label + " - " + note;
     highlightZone(zoneKey);
+    await prepareAudio();
+    const now = audioContext.currentTime;
 
-    const context = await getAudioContext();
-    const now = context.currentTime;
-
-    // Keep playback monophonic: a new drop gently replaces any note still sounding.
+    // Stop the previous note quickly so repeated drops cannot build up in volume.
     if (currentOscillator) {
-        try { currentOscillator.stop(now + 0.03); } catch (_) { /* Already stopped. */ }
+        try {
+            currentOscillator.stop(now + 0.03);
+        } catch (error) {
+            // The oscillator may already have finished naturally.
+        }
     }
 
-    const oscillator = context.createOscillator();
-    const noteGain = context.createGain();
+    const oscillator = audioContext.createOscillator();
+    const noteGain = audioContext.createGain();
     currentOscillator = oscillator;
     oscillator.type = "sine";
     oscillator.frequency.setValueAtTime(noteFrequencies[note], now);
 
-    // This small attack and release envelope produces a gentle, click-free note.
+    // A short fade in and fade out creates a gentle sound without clicks.
     noteGain.gain.setValueAtTime(0.0001, now);
     noteGain.gain.exponentialRampToValueAtTime(0.85, now + 0.04);
     noteGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.55);
@@ -160,20 +194,14 @@ async function playZoneNote(zoneKey) {
     oscillator.addEventListener("ended", () => {
         oscillator.disconnect();
         noteGain.disconnect();
-        if (currentOscillator === oscillator) currentOscillator = null;
+        if (currentOscillator === oscillator) {
+            currentOscillator = null;
+        }
     });
 }
 
-function highlightZone(zoneKey) {
-    clearTimeout(clearHighlightTimer);
-    document.querySelectorAll(".zone").forEach((zone) => zone.classList.remove("is-selected"));
-    const selectedZone = document.querySelector('[data-zone="' + zoneKey + '"]');
-    selectedZone.classList.add("is-selected");
-    clearHighlightTimer = setTimeout(() => selectedZone.classList.remove("is-selected"), 450);
-}
-
+///////////// Setup
 setInitialPosition();
 window.addEventListener("resize", () => {
-    // Re-clamp the last saved position when a responsive layout changes dimensions.
-    placeFlower(lastValidPosition.x, lastValidPosition.y);
+placeFlower(lastValidPosition.x, lastValidPosition.y);
 });
